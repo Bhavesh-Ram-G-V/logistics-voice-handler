@@ -27,7 +27,12 @@ import {
   BatteryWarning,
   History,
   Clock,
+  WifiOff,
+  X,
+  MapPin,
+  Navigation,
 } from 'lucide-react';
+import * as d3 from 'd3';
 
 interface RouteContext {
   id: string;
@@ -74,6 +79,34 @@ interface VoiceHistoryItem {
   timestamp: string;
   tool?: string;
 }
+
+interface WaypointNode {
+  id: number;
+  name: string;
+  code: string;
+  distance: string;
+  eta: string;
+  active: boolean;
+  x?: number;
+  y?: number;
+}
+
+const WAYPOINTS: WaypointNode[] = [
+  { id: 1, name: 'Terminal North', code: 'TN-01', distance: 'Active Stop', eta: 'Now', active: true },
+  { id: 2, name: 'Bay 4 Check-In', code: 'BY-04', distance: '+2.1 mi', eta: '08:45 AM', active: false },
+  { id: 3, name: 'Depot Central', code: 'DC-03', distance: '+4.5 mi', eta: '09:05 AM', active: false },
+  { id: 4, name: 'Cold-Chain Bay 3', code: 'CC-03', distance: '+7.2 mi', eta: '09:25 AM', active: false },
+  { id: 5, name: 'West Wharf Hub', code: 'WW-05', distance: '+9.8 mi', eta: '09:50 AM', active: false },
+  { id: 6, name: 'Industrial Gateway', code: 'IG-06', distance: '+12.4 mi', eta: '10:15 AM', active: false },
+  { id: 7, name: 'Highway 101 Depot', code: 'HW-07', distance: '+15.1 mi', eta: '10:40 AM', active: false },
+  { id: 8, name: 'North River Silos', code: 'NR-08', distance: '+18.3 mi', eta: '11:05 AM', active: false },
+  { id: 9, name: 'Cross-Dock Delta', code: 'CD-09', distance: '+21.0 mi', eta: '11:30 AM', active: false },
+  { id: 10, name: 'Airport Cargo Terminal', code: 'AC-10', distance: '+24.6 mi', eta: '11:55 AM', active: false },
+  { id: 11, name: 'Eastbound Spur', code: 'ES-11', distance: '+27.4 mi', eta: '12:20 PM', active: false },
+  { id: 12, name: 'Substation Dock 2', code: 'SD-12', distance: '+30.8 mi', eta: '12:45 PM', active: false },
+  { id: 13, name: 'Midtown Transfer', code: 'MT-13', distance: '+33.9 mi', eta: '01:10 PM', active: false },
+  { id: 14, name: 'South Harbor Gate', code: 'SH-14', distance: '+36.5 mi', eta: '01:35 PM', active: false },
+];
 
 export default function App() {
   // Voice & Input State
@@ -156,6 +189,27 @@ export default function App() {
     ];
   });
 
+  // Offline Queue Reconnection Sync Progress
+  const [syncProgress, setSyncProgress] = useState<{
+    isSyncing: boolean;
+    total: number;
+    synced: number;
+    lastCompletedTime: string | null;
+  }>({
+    isSyncing: false,
+    total: 0,
+    synced: 0,
+    lastCompletedTime: null,
+  });
+
+  // Offline Toast Notification State
+  const [showOfflineToast, setShowOfflineToast] = useState<boolean>(false);
+  const [toastDismissed, setToastDismissed] = useState<boolean>(false);
+
+  // D3 Route Waypoints Visualizer State
+  const d3SvgRef = useRef<SVGSVGElement | null>(null);
+  const [selectedWaypoint, setSelectedWaypoint] = useState<WaypointNode>(WAYPOINTS[0]);
+
   // Diagnostics Panel toggle
   const [showDiagnostics, setShowDiagnostics] = useState<boolean>(false);
 
@@ -180,6 +234,212 @@ export default function App() {
       console.warn('Voice history save error:', e);
     }
   }, [voiceHistory]);
+
+  // Network Offline/Online Detection
+  useEffect(() => {
+    const handleOffline = () => {
+      setMcpStatus('self_healing');
+      setShowOfflineToast(true);
+      setToastDismissed(false);
+    };
+
+    const handleOnline = () => {
+      setMcpStatus('online');
+      setShowOfflineToast(false);
+    };
+
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      handleOffline();
+    }
+
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, []);
+
+  // D3 SVG Waypoints Renderer
+  useEffect(() => {
+    if (!d3SvgRef.current) return;
+
+    const svg = d3.select(d3SvgRef.current);
+    svg.selectAll('*').remove();
+
+    // Map 14 waypoints across 2 continuous rows
+    const waypointsWithCoords = WAYPOINTS.map((wp, index) => {
+      let x = 0;
+      let y = 0;
+      if (index < 7) {
+        // Row 1 (Stops 1 to 7): left to right
+        x = 28 + index * 53;
+        y = 28;
+      } else {
+        // Row 2 (Stops 8 to 14): right to left
+        x = 346 - (index - 7) * 53;
+        y = 66;
+      }
+      return { ...wp, x, y };
+    });
+
+    const defs = svg.append('defs');
+
+    // Route corridor gradient
+    const gradient = defs
+      .append('linearGradient')
+      .attr('id', 'routeCorridorGradient')
+      .attr('x1', '0%')
+      .attr('y1', '0%')
+      .attr('x2', '100%')
+      .attr('y2', '100%');
+
+    gradient.append('stop').attr('offset', '0%').attr('stop-color', '#38bdf8');
+    gradient.append('stop').attr('offset', '55%').attr('stop-color', '#0284c7');
+    gradient.append('stop').attr('offset', '100%').attr('stop-color', '#10b981');
+
+    // Glow filter for active waypoint
+    const filter = defs
+      .append('filter')
+      .attr('id', 'activeWaypointGlow')
+      .attr('x', '-50%')
+      .attr('y', '-50%')
+      .attr('width', '200%')
+      .attr('height', '200%');
+    filter.append('feGaussianBlur').attr('stdDeviation', '3').attr('result', 'coloredBlur');
+    const feMerge = filter.append('feMerge');
+    feMerge.append('feMergeNode').attr('in', 'coloredBlur');
+    feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+    // Connected Corridor Path Points
+    const pathPoints: [number, number][] = [
+      ...waypointsWithCoords.slice(0, 7).map(w => [w.x!, w.y!] as [number, number]),
+      [368, 47], // Right turnaround arc
+      ...waypointsWithCoords.slice(7).map(w => [w.x!, w.y!] as [number, number]),
+    ];
+
+    const lineGenerator = d3
+      .line()
+      .curve(d3.curveCatmullRom.alpha(0.5));
+
+    // Road track underlay
+    svg
+      .append('path')
+      .attr('d', lineGenerator(pathPoints))
+      .attr('fill', 'none')
+      .attr('stroke', '#0f172a')
+      .attr('stroke-width', 6)
+      .attr('stroke-linecap', 'round')
+      .attr('stroke-linejoin', 'round');
+
+    // Active Route Corridor Dashed Line
+    svg
+      .append('path')
+      .attr('d', lineGenerator(pathPoints))
+      .attr('fill', 'none')
+      .attr('stroke', 'url(#routeCorridorGradient)')
+      .attr('stroke-width', 2.5)
+      .attr('stroke-dasharray', '5 3')
+      .attr('stroke-linecap', 'round')
+      .attr('opacity', 0.9);
+
+    // Node Groups
+    const nodeGroups = svg
+      .selectAll('g.waypoint-node')
+      .data(waypointsWithCoords)
+      .enter()
+      .append('g')
+      .attr('class', 'waypoint-node')
+      .attr('transform', d => `translate(${d.x}, ${d.y})`)
+      .style('cursor', 'pointer')
+      .on('click', (_event, d) => {
+        setSelectedWaypoint(d);
+      });
+
+    // Inactive Nodes (2 to 14)
+    nodeGroups
+      .filter(d => !d.active)
+      .append('circle')
+      .attr('r', 6.5)
+      .attr('fill', d => (d.id === selectedWaypoint.id ? '#1e293b' : '#0f172a'))
+      .attr('stroke', d => (d.id === selectedWaypoint.id ? '#38bdf8' : '#475569'))
+      .attr('stroke-width', d => (d.id === selectedWaypoint.id ? 2 : 1.5));
+
+    nodeGroups
+      .filter(d => !d.active)
+      .append('text')
+      .attr('dy', 2.5)
+      .attr('text-anchor', 'middle')
+      .attr('fill', d => (d.id === selectedWaypoint.id ? '#38bdf8' : '#94a3b8'))
+      .attr('font-size', '7px')
+      .attr('font-family', 'monospace')
+      .attr('font-weight', '700')
+      .text(d => d.id);
+
+    // Active Node (Waypoint 1: Terminal North)
+    const activeGroup = nodeGroups.filter(d => d.active);
+
+    // Outer Animated Pulse Ring
+    activeGroup
+      .append('circle')
+      .attr('r', 13)
+      .attr('fill', 'none')
+      .attr('stroke', '#38bdf8')
+      .attr('stroke-width', 1.5)
+      .attr('opacity', 0.5)
+      .attr('class', 'animate-pulse');
+
+    // Radial Glow Halo
+    activeGroup
+      .append('circle')
+      .attr('r', 9.5)
+      .attr('fill', '#0284c7')
+      .attr('opacity', 0.35)
+      .attr('filter', 'url(#activeWaypointGlow)');
+
+    // Core Active Circle
+    activeGroup
+      .append('circle')
+      .attr('r', 7.5)
+      .attr('fill', '#0284c7')
+      .attr('stroke', '#38bdf8')
+      .attr('stroke-width', 2.2);
+
+    // Active Number
+    activeGroup
+      .append('text')
+      .attr('dy', 2.5)
+      .attr('text-anchor', 'middle')
+      .attr('fill', '#ffffff')
+      .attr('font-size', '7.5px')
+      .attr('font-weight', '900')
+      .attr('font-family', 'monospace')
+      .text('1');
+
+    // Floating Active Tag
+    const activeTag = activeGroup.append('g').attr('transform', 'translate(0, -12)');
+    activeTag
+      .append('rect')
+      .attr('x', -16)
+      .attr('y', -7)
+      .attr('width', 32)
+      .attr('height', 10)
+      .attr('rx', 2.5)
+      .attr('fill', '#0369a1')
+      .attr('stroke', '#38bdf8')
+      .attr('stroke-width', 0.8);
+
+    activeTag
+      .append('text')
+      .attr('text-anchor', 'middle')
+      .attr('dy', 0.5)
+      .attr('fill', '#f0f9ff')
+      .attr('font-size', '6.5px')
+      .attr('font-weight', '800')
+      .attr('font-family', 'monospace')
+      .text('ACTIVE');
+  }, [selectedWaypoint, routeContext.currentStop, routeContext.stopsLeft]);
 
   // Battery Status API Integration
   useEffect(() => {
@@ -360,6 +620,8 @@ export default function App() {
       // Handle Self-Healing tag & badge
       if (data.selfHealingActive || (data.response && data.response.includes('[SELF_HEALING_ACTIVE]'))) {
         setMcpStatus('self_healing');
+        setShowOfflineToast(true);
+        setToastDismissed(false);
 
         // Cache failed request to local storage queue
         const newQueueItem: QueuedRequest = {
@@ -398,6 +660,8 @@ export default function App() {
     } catch (error: any) {
       console.warn('Network call failed, executing client-side self-healing fallback:', error);
       setMcpStatus('self_healing');
+      setShowOfflineToast(true);
+      setToastDismissed(false);
       const fallbackText =
         'MCP Connection dropped. Self-healing active: Request cached to local storage and queued for background dispatch. [SELF_HEALING_ACTIVE]';
 
@@ -518,29 +782,86 @@ export default function App() {
       setSimulateMCPFault(data.simulateMCPFault);
       if (!data.simulateMCPFault) {
         setMcpStatus('online');
+        setShowOfflineToast(false);
+        // Auto-synchronize pending offline queue after reconnection
+        if (offlineQueue.length > 0) {
+          setTimeout(() => {
+            handleDispatchQueue();
+          }, 350);
+        }
+      } else {
+        setMcpStatus('self_healing');
+        setShowOfflineToast(true);
+        setToastDismissed(false);
       }
     } catch {
       setSimulateMCPFault(!simulateMCPFault);
     }
   };
 
-  // Dispatch & Sync Offline Queue
+  // Dispatch & Sync Offline Queue with Progress Ring & Status Bar updates
   const handleDispatchQueue = async () => {
-    if (offlineQueue.length === 0) return;
+    if (offlineQueue.length === 0 || syncProgress.isSyncing) return;
+    const itemsToSync = [...offlineQueue];
+    const totalCount = itemsToSync.length;
+
+    setSyncProgress({
+      isSyncing: true,
+      total: totalCount,
+      synced: 0,
+      lastCompletedTime: null,
+    });
+
     try {
-      const res = await fetch('/api/queue/dispatch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ queuedItems: offlineQueue }),
-      });
-      if (res.ok) {
-        setOfflineQueue([]);
+      let successfulCount = 0;
+      let remaining = [...itemsToSync];
+
+      for (let i = 0; i < itemsToSync.length; i++) {
+        const item = itemsToSync[i];
+        try {
+          const res = await fetch('/api/process_voice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: item.query }),
+          });
+          if (res.ok) {
+            successfulCount++;
+            remaining = remaining.filter(q => q.id !== item.id);
+            setOfflineQueue([...remaining]);
+            setSyncProgress({
+              isSyncing: i + 1 < itemsToSync.length,
+              total: totalCount,
+              synced: successfulCount,
+              lastCompletedTime: i + 1 === itemsToSync.length ? getFormattedTime() : null,
+            });
+          }
+        } catch (e) {
+          console.warn('Dispatch failed for item:', item.id, e);
+          break;
+        }
+        if (i + 1 < itemsToSync.length) {
+          await new Promise(r => setTimeout(r, 280));
+        }
+      }
+
+      setSyncProgress(prev => ({
+        ...prev,
+        isSyncing: false,
+        total: totalCount,
+        synced: successfulCount,
+        lastCompletedTime: getFormattedTime(),
+      }));
+
+      if (successfulCount > 0) {
         setMcpStatus('online');
-        setAgentResponse('Background dispatch complete. All cached driver requests synchronized.');
+        setAgentResponse(
+          `Reconnection synchronized: ${successfulCount} of ${totalCount} queued request(s) processed.`
+        );
         setResponseTimestamp(getFormattedTime());
       }
-    } catch {
-      alert('Unable to sync queue while offline.');
+    } catch (err) {
+      console.error('Queue sync failure:', err);
+      setSyncProgress(prev => ({ ...prev, isSyncing: false }));
     }
   };
 
@@ -679,6 +1000,82 @@ export default function App() {
           <div className="flex items-center gap-1.5 text-slate-200 font-semibold bg-slate-900/60 px-2 py-1 rounded-md border border-slate-700/60">
             <span>📦</span>
             <span>{routeContext.stopsLeft} Stops Left</span>
+          </div>
+        </section>
+
+        {/* D3-Powered Route Waypoints SVG Visualization */}
+        <section
+          aria-labelledby="route-waypoints-heading"
+          className="bg-[#1e293b] border border-slate-700 rounded-xl p-3.5 shadow-md flex flex-col gap-2.5"
+        >
+          <div className="flex items-center justify-between border-b border-slate-700/80 pb-2">
+            <div className="flex items-center gap-1.5">
+              <MapPin className="w-3.5 h-3.5 text-sky-400" />
+              <h2
+                id="route-waypoints-heading"
+                className="text-xs font-bold uppercase tracking-wider text-slate-200"
+              >
+                14-Stop Corridor Waypoint Map
+              </h2>
+            </div>
+            <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full bg-sky-950 text-sky-300 border border-sky-600/80">
+              Stop 1 Active (Terminal North)
+            </span>
+          </div>
+
+          {/* D3 Rendered SVG Canvas */}
+          <div className="w-full bg-[#0a0f1d] rounded-lg p-2 border border-slate-800 relative overflow-hidden">
+            <svg
+              ref={d3SvgRef}
+              viewBox="0 0 380 92"
+              className="w-full h-auto select-none"
+              role="img"
+              aria-label="Route map rendering 14 stops as connected nodes with the active waypoint highlighted"
+            ></svg>
+            <div className="flex items-center justify-between text-[9px] font-mono text-slate-500 px-1 pt-1 border-t border-slate-800/80">
+              <span className="text-sky-400">Stop 1 (Active)</span>
+              <span>Loop Corridor (Catmull-Rom)</span>
+              <span className="text-emerald-400">Stop 14 (Final Destination)</span>
+            </div>
+          </div>
+
+          {/* Selected Waypoint Detail Card */}
+          <div className="flex items-center justify-between bg-[#0f172a] rounded-lg p-2.5 border border-slate-700/80 text-[11px]">
+            <div className="flex items-center gap-2 min-w-0">
+              <span
+                className={`px-1.5 py-0.5 rounded font-mono font-bold text-[10px] shrink-0 ${
+                  selectedWaypoint.active
+                    ? 'bg-sky-950 text-sky-300 border border-sky-600'
+                    : 'bg-slate-800 text-slate-300 border border-slate-700'
+                }`}
+              >
+                #{selectedWaypoint.id}
+              </span>
+              <div className="flex flex-col min-w-0">
+                <span className="font-semibold text-slate-200 truncate">
+                  {selectedWaypoint.name}
+                </span>
+                <span className="text-slate-400 font-mono text-[10px]">
+                  {selectedWaypoint.code} • {selectedWaypoint.distance}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[10px] text-emerald-400 font-mono font-semibold">
+                ETA {selectedWaypoint.eta}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  processVoiceQuery(`Status of Stop ${selectedWaypoint.id} ${selectedWaypoint.name}`)
+                }
+                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sky-300 hover:text-white border border-slate-600 hover:border-sky-400 text-[10px] font-bold cursor-pointer transition"
+                aria-label={`Ask voice status for Stop ${selectedWaypoint.id}`}
+              >
+                Query Stop
+              </button>
+            </div>
           </div>
         </section>
 
@@ -1238,27 +1635,158 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Local Storage Offline Queue */}
-              <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800 flex flex-col gap-2">
+              {/* Local Storage Offline Queue & Reconnection Sync Progress */}
+              <div className="bg-slate-950/70 p-3.5 rounded-lg border border-slate-800 flex flex-col gap-3">
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-slate-300 flex items-center gap-1.5">
                     <HardDrive className="w-3.5 h-3.5 text-sky-400" />
-                    <span>Local Storage Offline Queue ({offlineQueue.length})</span>
+                    <span>Offline Queue &amp; Reconnection Sync</span>
                   </span>
-                  {offlineQueue.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-sky-300 border border-slate-700">
+                      {offlineQueue.length} Pending
+                    </span>
+                    {offlineQueue.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleDispatchQueue}
+                        disabled={syncProgress.isSyncing}
+                        className="px-2.5 py-0.5 rounded bg-sky-900/80 hover:bg-sky-800 disabled:opacity-50 text-sky-200 border border-sky-600 text-[10px] font-bold cursor-pointer transition flex items-center gap-1"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${syncProgress.isSyncing ? 'animate-spin' : ''}`} />
+                        <span>{syncProgress.isSyncing ? 'Syncing...' : 'Sync Now'}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Progress Ring & Status Bar Component */}
+                {(syncProgress.total > 0 || syncProgress.isSyncing) && (
+                  <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col gap-2.5">
+                    <div className="flex items-center gap-3">
+                      {/* Circular Progress Ring */}
+                      <div className="relative w-11 h-11 shrink-0 flex items-center justify-center">
+                        <svg className="w-11 h-11 -rotate-90" viewBox="0 0 44 44">
+                          {/* Track Circle */}
+                          <circle
+                            cx="22"
+                            cy="22"
+                            r="17"
+                            className="stroke-slate-800"
+                            strokeWidth="4"
+                            fill="none"
+                          />
+                          {/* Progress Arc */}
+                          <circle
+                            cx="22"
+                            cy="22"
+                            r="17"
+                            className={`transition-all duration-300 ease-out ${
+                              syncProgress.synced === syncProgress.total && syncProgress.total > 0
+                                ? 'stroke-emerald-400'
+                                : 'stroke-sky-400'
+                            }`}
+                            strokeWidth="4"
+                            strokeDasharray={106.8}
+                            strokeDashoffset={
+                              syncProgress.total > 0
+                                ? 106.8 - (syncProgress.synced / syncProgress.total) * 106.8
+                                : 106.8
+                            }
+                            strokeLinecap="round"
+                            fill="none"
+                          />
+                        </svg>
+                        <span className="absolute text-[10px] font-mono font-bold text-slate-100">
+                          {syncProgress.total > 0
+                            ? `${Math.round((syncProgress.synced / syncProgress.total) * 100)}%`
+                            : '0%'}
+                        </span>
+                      </div>
+
+                      {/* Text & Stats */}
+                      <div className="flex-1 flex flex-col justify-center">
+                        <div className="flex items-center justify-between text-xs font-semibold">
+                          <span className="text-slate-200 flex items-center gap-1.5">
+                            {syncProgress.isSyncing ? (
+                              <>
+                                <span className="inline-block w-2 h-2 rounded-full bg-sky-400 animate-ping"></span>
+                                <span className="text-sky-300">Synchronizing Queue...</span>
+                              </>
+                            ) : syncProgress.synced === syncProgress.total ? (
+                              <>
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                <span className="text-emerald-300">Reconnection Synchronized</span>
+                              </>
+                            ) : (
+                              <span>Sync Progress</span>
+                            )}
+                          </span>
+                          <span className="text-[11px] font-mono font-bold text-sky-300">
+                            {syncProgress.synced} / {syncProgress.total} items
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 mt-0.5">
+                          {syncProgress.isSyncing
+                            ? 'Processing cached requests through background MCP dispatch'
+                            : syncProgress.lastCompletedTime
+                            ? `Last synchronized at ${syncProgress.lastCompletedTime}`
+                            : 'All cached requests dispatched'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Status Bar */}
+                    <div className="flex flex-col gap-1">
+                      <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-300 ease-out rounded-full ${
+                            syncProgress.synced === syncProgress.total && syncProgress.total > 0
+                              ? 'bg-gradient-to-r from-emerald-500 to-teal-400'
+                              : 'bg-gradient-to-r from-sky-500 to-sky-400'
+                          }`}
+                          style={{
+                            width: `${
+                              syncProgress.total > 0
+                                ? Math.round((syncProgress.synced / syncProgress.total) * 100)
+                                : 0
+                            }%`,
+                          }}
+                        ></div>
+                      </div>
+                      <div className="flex justify-between items-center text-[9px] font-mono text-slate-500 px-0.5">
+                        <span>0%</span>
+                        <span>
+                          {syncProgress.total > 0
+                            ? `${syncProgress.synced} of ${syncProgress.total} synchronized`
+                            : 'Idle'}
+                        </span>
+                        <span>100%</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Queue Items List */}
+                {offlineQueue.length === 0 ? (
+                  <div className="flex items-center justify-between text-slate-500 text-[11px]">
+                    <span className="italic">No requests currently cached in local storage.</span>
                     <button
                       type="button"
-                      onClick={handleDispatchQueue}
-                      className="px-2 py-0.5 rounded bg-sky-900/80 hover:bg-sky-800 text-sky-200 border border-sky-600 text-[10px] font-bold cursor-pointer"
+                      onClick={() => {
+                        const sample: QueuedRequest = {
+                          id: `queue-${Date.now()}`,
+                          query: 'Status of Container C-89',
+                          timestamp: getFormattedTime(),
+                          status: 'pending',
+                        };
+                        setOfflineQueue(prev => [sample, ...prev]);
+                      }}
+                      className="text-[10px] text-sky-400 hover:text-sky-300 underline cursor-pointer"
                     >
-                      Sync Now
+                      + Add test item
                     </button>
-                  )}
-                </div>
-                {offlineQueue.length === 0 ? (
-                  <span className="text-slate-500 italic text-[11px]">
-                    No requests currently cached in local storage.
-                  </span>
+                  </div>
                 ) : (
                   <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
                     {offlineQueue.map(item => (
@@ -1301,6 +1829,66 @@ export default function App() {
           )}
         </section>
       </main>
+
+      {/* Floating Offline Toast Notification */}
+      {showOfflineToast && !toastDismissed && (
+        <aside
+          role="status"
+          aria-live="assertive"
+          aria-atomic="true"
+          className="fixed bottom-14 left-1/2 -translate-x-1/2 w-[92%] max-w-md z-50 animate-in fade-in slide-in-from-bottom-4 duration-300"
+        >
+          <div className="bg-[#0f172a]/95 border-2 border-rose-500/90 text-rose-100 shadow-[0_10px_35px_rgba(244,63,94,0.35)] backdrop-blur-md rounded-2xl p-4 flex items-start gap-3.5">
+            <div className="p-2 rounded-xl bg-rose-950/90 border border-rose-500/50 text-rose-400 shrink-0 mt-0.5 relative">
+              <span className="animate-ping absolute -top-1 -right-1 h-3 w-3 rounded-full bg-rose-500 opacity-75"></span>
+              <span className="relative flex h-2 w-2 rounded-full bg-rose-500 absolute -top-0.5 -right-0.5"></span>
+              <WifiOff className="w-5 h-5" />
+            </div>
+
+            <div className="flex-1 flex flex-col gap-1 min-w-0">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-extrabold uppercase tracking-wider text-rose-300 flex items-center gap-1.5">
+                  Offline State Detected
+                </span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-rose-950 border border-rose-700 text-rose-200 font-bold">
+                  Self-Healing Active
+                </span>
+              </div>
+              <p className="text-xs text-slate-200 leading-relaxed font-medium">
+                MCP connection unavailable. Driver actions are being <strong className="text-rose-300 font-bold">cached locally</strong> in queue for background sync upon reconnection.
+              </p>
+              {offlineQueue.length > 0 && (
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-[11px] font-mono font-bold text-amber-300 bg-slate-900/90 px-2 py-0.5 rounded border border-slate-700 flex items-center gap-1">
+                    <HardDrive className="w-3 h-3 text-amber-400" />
+                    <span>{offlineQueue.length} request(s) cached</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDiagnostics(true);
+                      setToastDismissed(true);
+                    }}
+                    className="text-[11px] font-semibold text-sky-300 hover:text-white underline cursor-pointer"
+                  >
+                    View Queue →
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setToastDismissed(true)}
+              className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition shrink-0 cursor-pointer"
+              aria-label="Dismiss offline notification"
+              title="Dismiss notification"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </aside>
+      )}
 
       {/* Footer */}
       <footer className="mt-auto border-t border-slate-800/80 bg-[#0f172a] p-3 text-center text-xs text-slate-400">
